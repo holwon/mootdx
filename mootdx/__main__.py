@@ -145,5 +145,12 @@ def bundle(symbol: str, action: str, market: str, output: Path, extension: str) 
     click.echo(f"文件目录: {output.resolve()}")
 
 
+@entry.command(help="启动桥 worker：行式 JSON 协议（stdin/stdout），供外部进程常驻驱动。")
+def worker() -> None:
+    from mootdx.worker import main
+
+    raise SystemExit(main())
+
+
 if __name__ == "__main__":
     entry()

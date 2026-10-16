@@ -1,3 +1,11 @@
+## Unreleased (2026-10-16)
+
+### Feat
+
+- `mootdx worker` 桥子命令：行式 JSON 协议 v1（stdin/stdout），供外部宿主常驻驱动
+  `daily_kline` 取数；stdout 只承载协议消息、日志走 stderr、stdin EOF 干净退出
+- 文档新增 `cli/worker.md`（帧格式、方法参数、宿主侧最小示例、排查表）
+
 ## v0.10.9 (2023-06-30)
 
 ### Fix
