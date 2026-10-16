@@ -8,7 +8,8 @@ JSON 对象、UTF-8 编码」的方式收发消息：
   失败输出 ``{"ready": false, "error": ...}`` 并保持进程存活；
 * 请求形如 ``{"id": N, "method": "daily_kline", "params": {...}}``，应答回同一 ``id``：
   ``{"id": N, "ok": true, "bars": [...]}`` 或 ``{"id": N, "ok": false, "error": "..."}``；
-* stdin 关闭（EOF）即退出，退出码 0——父进程被强杀时不留孤儿进程的前提。
+* stdin 关闭（EOF）即退出，退出码 0——父进程被强杀时不留孤儿进程的前提；
+  stdin 出现非法 UTF-8 字节属宿主协议违规，记日志并以退出码 2 结束（宿主按崩溃处理）。
 
 纪律：stdout 只承载协议消息（直接写 buffer，绕开文本层缓冲歧义）；日志一律走 stderr
 （经 ``mootdx.logger``，由调用方接管 stderr 转发）；请求严格串行（单飞行、写入等回读）。
@@ -115,7 +116,7 @@ def serve(reader: TextIO, writer: BinaryIO, factory: Callable[[], Any]) -> int:
     :param reader: 请求输入流（生产为包装成 UTF-8 的 stdin）
     :param writer: 协议输出流（生产为 stdout 的二进制 buffer）
     :param factory: 行情客户端工厂；抛异常即表现为 ``ready:false``（进程保持存活）
-    :return: 进程退出码（正常路径恒为 0）
+    :return: 进程退出码——正常路径（含 EOF）为 0，stdin 出现非法 UTF-8 时为 2
     """
 
     logger.info("hello: protocol=%s python=%s mootdx=%s", PROTOCOL, platform.python_version(), __version__)
@@ -131,6 +132,7 @@ def serve(reader: TextIO, writer: BinaryIO, factory: Callable[[], Any]) -> int:
 
     client = None
     ready_error = None
+    failure_code = 0
     warmup_started = time.perf_counter()
     try:
         client = factory()
@@ -146,7 +148,13 @@ def serve(reader: TextIO, writer: BinaryIO, factory: Callable[[], Any]) -> int:
         send(writer, {"ready": True, "server": server, "warmup_seconds": warmup_seconds})
 
     while True:
-        line = reader.readline()
+        try:
+            line = reader.readline()
+        except UnicodeDecodeError as exc:
+            # 非法 UTF-8 = 宿主侧协议违规；响亮失败（非零码），由宿主按崩溃处理并重建
+            logger.error("stdin 不是有效 UTF-8，退出: %s", exc)
+            failure_code = 2
+            break
         if not line:  # stdin 关闭 → 退出
             logger.info("stdin closed, exiting")
             break
@@ -173,7 +181,7 @@ def serve(reader: TextIO, writer: BinaryIO, factory: Callable[[], Any]) -> int:
             client.close()
         except Exception:  # noqa: BLE001 — 退出路径尽力而为
             logger.debug("close failed", exc_info=True)
-    return 0
+    return failure_code
 
 
 def _setup_logging() -> None:
@@ -185,13 +193,13 @@ def _setup_logging() -> None:
 
 
 def _setup_streams() -> None:
-    """读流强制 UTF-8（Windows 默认 cp936 会乱码或解码失败）。
+    """读流强制 UTF-8，严格模式（Windows 默认 cp936 会乱码或解码失败）。
 
-    ``errors="replace"`` 而非 strict：单个坏字节不该杀死桥——坏行会在 JSON 解析处
-    变成一条 ``ok:false`` 应答，进程继续服务。
+    严格（``errors="strict"``，同原型底稿）：宿主契约是 UTF-8 无 BOM 写行，出现非法
+    字节属于协议违规，宁可响亮失败（日志 + 非零退出，宿主按崩溃重建）也不静默替换。
     """
 
-    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="strict")
 
 
 def main() -> int:

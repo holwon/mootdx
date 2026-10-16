@@ -237,6 +237,24 @@ def test_stdin_eof_exits_zero_and_closes_client():
     assert client.closed is True
 
 
+class InvalidUtf8Reader:
+    """模拟读到非法 UTF-8 字节的严格解码读流。"""
+
+    def readline(self):
+        raise UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+
+
+def test_invalid_utf8_on_stdin_exits_with_code_2():
+    writer = io.BytesIO()
+    reader = InvalidUtf8Reader()
+
+    code = worker.serve(reader, writer, factory=lambda: FakeQuotes())
+
+    messages = [json.loads(line) for line in writer.getvalue().decode("utf-8").splitlines()]
+    assert code == 2
+    assert [message.get("hello") for message in messages[:1]] == [True]  # 握手已发生，失败在请求阶段
+
+
 def test_logs_stay_off_the_protocol_stream(caplog):
     with caplog.at_level(logging.INFO, logger="mootdx"):
         messages, _ = run_serve([], lambda: FakeQuotes(server=("117.34.114.16", 7709)))
