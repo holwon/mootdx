@@ -52,7 +52,8 @@ def connect2(proxy: dict, index: str = "HQ") -> dict:
     result = dict(proxy, time=None)
     api = TdxHq_API() if index == "HQ" else TdxExHq_API()
     try:
-        with api.connect(result["addr"], int(result["port"]), time_out=0.7):
+        connected = api.connect(result["addr"], int(result["port"]), time_out=0.7)
+        if connected:
             started = time.perf_counter()
             if index == "HQ":
                 healthy = api.get_security_bars(9, 1, "600000", 0, 1)
@@ -60,6 +61,7 @@ def connect2(proxy: dict, index: str = "HQ") -> dict:
                 healthy = api.get_instrument_count()
             if healthy:
                 result["time"] = (time.perf_counter() - started) * 1000
+            api.disconnect()
     except (OSError, RuntimeError, TypeError, ValueError, TdxConnectionError, TdxFunctionCallError) as exc:
         logger.debug("%s:%s 协议验证失败: %s", result["addr"], result["port"], exc)
     return result
