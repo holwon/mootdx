@@ -19,70 +19,25 @@
 
 from __future__ import annotations
 
-import json
-import socket
-import threading
 from datetime import date, timedelta
 
 import pytest
 
 from mootdx import worker
+from tests.tcp_support import RunningService
 
 pytestmark = pytest.mark.network
-
 HANDSHAKE_TIMEOUT = 60.0
 REQUEST_TIMEOUT = 60.0
 
 
-class Service:
-    """进程内起一个真 TCP 服务（127.0.0.1 + 系统分配端口）。"""
-
-    def __init__(self) -> None:
-        self.server = worker.create_server("127.0.0.1", 0)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-
-    @property
-    def address(self) -> tuple[str, int]:
-        host, port = self.server.server_address[:2]
-        return host, port
-
-    def connect(self) -> Peer:
-        return Peer(self.address)
-
-    def stop(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=15)
-
-
-class Peer:
-    """把连接包成「发一行收一行」，并强制每一行都是合法协议帧。"""
-
-    def __init__(self, address: tuple[str, int]) -> None:
-        self.socket = socket.create_connection(address, timeout=REQUEST_TIMEOUT)
-        self.reader = self.socket.makefile("rb")
-
-    def read_message(self, timeout: float = REQUEST_TIMEOUT, what: str = "message") -> dict:
-        self.socket.settimeout(timeout)
-        line = self.reader.readline()
-        if not line:
-            pytest.fail(f"等待 {what} 时连接被关闭")
-        # 硬性纪律：每一行都必须是可解析的协议消息（UTF-8 无损）
-        return json.loads(line.decode("utf-8", errors="strict"))
-
-    def send(self, message: dict) -> None:
-        payload = (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
-        self.socket.sendall(payload)
-
-    def close(self) -> None:
-        self.reader.close()
-        self.socket.close()
-
-
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def service():
-    running = Service()
+    # 用生产工厂 ClientFactory（每连接一个新客户端 + 进程内共享探测结果），
+    # 不传替身——这组用例的职责就是验证真实路径。
+    # 模块级共享：一个服务实例覆盖整组用例，首次探测只付一次（约 10s），
+    # 而不是每个用例各付一次。连接仍各用例独立，隔离性不受影响。
+    running = RunningService(worker.ClientFactory(), timeout=REQUEST_TIMEOUT)
     try:
         yield running
     finally:
@@ -100,13 +55,13 @@ def peer(service):
 
 @pytest.fixture()
 def ready_peer(peer):
-    hello = peer.read_message(what="hello")
+    hello, ready = peer.handshake()
+
     assert hello["hello"] is True
     assert hello["protocol"] == 1
     assert hello["python"].startswith("3.")
     assert hello["mootdx"]
 
-    ready = peer.read_message(timeout=HANDSHAKE_TIMEOUT, what="ready")
     assert ready["ready"] is True, ready
     assert isinstance(ready["server"], list), ready
     assert isinstance(ready["warmup_seconds"], (int, float)), ready
@@ -163,13 +118,15 @@ def test_connection_close_keeps_service_listening(service):
     """关连接 = 会话结束；服务不退出，下一条连接照常可用。"""
 
     first = service.connect()
-    assert first.read_message(what="hello")["protocol"] == 1
-    first.read_message(timeout=HANDSHAKE_TIMEOUT, what="ready")
-    first.close()
+    try:
+        assert first.handshake()[0]["protocol"] == 1
+    finally:
+        first.close()
 
     second = service.connect()
     try:
-        assert second.read_message(what="hello")["hello"] is True
-        assert second.read_message(timeout=HANDSHAKE_TIMEOUT, what="ready")["ready"] is True
+        hello, ready = second.handshake()
+        assert hello["hello"] is True
+        assert ready["ready"] is True
     finally:
         second.close()

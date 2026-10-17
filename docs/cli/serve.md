@@ -30,13 +30,14 @@ docker run -d --name mootdx \
 * **`-p 127.0.0.1:7701:7701` 带前缀是刻意的**：服务本身不做鉴权，数据虽是公开行情，
   但没有理由把 7701 广播到局域网。明知风险要对外提供时再改成 `-p 7701:7701`。
 * **`--restart unless-stopped`**：机器重启或进程崩溃后服务自己回来，不必宿主侧重试。
-* **缓存卷**：复权数据（`xdxr`）与服务器测速结果缓存在容器内 `/root/.mootdx`。挂命名卷
-  可在**重建容器**后复用，冷启动首次请求约 3.8s、热路径约 46ms：
+* **缓存卷**：复权数据（`xdxr`）与服务器测速结果缓存在容器内 `/home/mootdx/.mootdx`
+  （镜像以非 root 运行，家目录就是这里）。挂命名卷可在**重建容器**后复用，冷启动首次
+  请求约 10s（含探测与除权数据拉取）、热路径约 0.06s：
 
 ```shell
 docker run -d --name mootdx \
   -p 127.0.0.1:7701:7701 \
-  -v mootdx-cache:/root/.mootdx \
+  -v mootdx-cache:/home/mootdx/.mootdx \
   --restart unless-stopped \
   ghcr.io/holwon/mootdx:latest
 ```
