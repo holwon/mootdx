@@ -132,6 +132,42 @@ mootdx reader --help
 mootdx quotes --help
 ```
 
+## 用 Docker 跑数据服务
+
+不想碰 Python 环境时，直接用官方镜像起一个常驻数据服务，然后让任何程序连
+`host:port` 取数：
+
+```bash
+docker run -d --name mootdx \
+  -p 127.0.0.1:7701:7701 \
+  --restart unless-stopped \
+  ghcr.io/holwon/mootdx:latest
+```
+
+* **端口**：容器监听 `7701`；只映射到 `127.0.0.1` 是刻意的（服务不做鉴权，没必要广播到局域网）。
+  要对外提供时改成 `-p 7701:7701`。
+* **缓存**：复权数据与测速结果缓存在容器内 `/home/mootdx/.mootdx`。加
+  `-v mootdx-cache:/home/mootdx/.mootdx` 可在重建容器后复用（热路径约 0.06s，冷路径约 10s）。
+* **网络**：容器需要**出站 TCP 7709** 才能连通达信行情服务器；不需要任何入站放行（除映射端口）。
+* 镜像同时提供 `linux/amd64` 与 `linux/arm64`。
+
+取数示例（行式 JSON 协议，每行一个对象）：
+
+```python
+import json, socket
+
+with socket.create_connection(("127.0.0.1", 7701), timeout=30) as sock:
+    stream = sock.makefile("rwb")
+    print(json.loads(stream.readline()))   # hello
+    print(json.loads(stream.readline()))   # ready
+    stream.write(b'{"id": 1, "method": "daily_kline", "params": {"symbol": "002029", "count": 60}}\n')
+    stream.flush()
+    print(json.loads(stream.readline())["bars"][-1])
+```
+
+协议帧、方法参数、从 `mootdx worker`（已删除的 stdio 形态）的迁移与排查表见
+[docs/cli/serve.md](docs/cli/serve.md)。也可以不用容器，直接 `mootdx serve --port 7701`。
+
 ## 测试和本地验证
 
 在项目目录执行默认离线测试：

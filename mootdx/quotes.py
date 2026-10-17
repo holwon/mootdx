@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pandas
 import pandas as pd
+from tdxpy.constants import hq_hosts
 from tdxpy.exceptions import TdxConnectionError, TdxFunctionCallError, ValidationException
 from tdxpy.exhq import TdxExHq_API
 from tdxpy.hq import TdxHq_API
@@ -163,7 +164,13 @@ class StdQuotes(BaseQuotes):
         if not hosts:
             raise MootdxValidationException('没有可用的标准行情服务器配置')
         configured_best = config.get('BESTIP.HQ')
+        # 候选池 = 配置里的清单 + tdxpy 自带清单。只探前者是不够的：内建的那批
+        # （consts.HQ_HOSTS）会整批失效，而 tdxpy 自带的那批里仍有可用的；没有
+        # ~/.mootdx/config.json 的干净环境（例如刚拉起的镜像）没有 bestip 结果，
+        # 只探内建清单就会表现为「装好了但一台服务器都连不上」。
         candidates = [requested_server] if requested_server else [configured_best] + [item[1:3] for item in hosts]
+        if not requested_server:
+            candidates += [item[1:3] for item in hq_hosts]
         candidates = list(dict.fromkeys(valid_server(item) for item in candidates if item))
 
         def probe(endpoint):

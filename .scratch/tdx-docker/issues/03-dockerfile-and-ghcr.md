@@ -6,7 +6,7 @@
 
 **Blocked by:** 01（镜像的入口是 `serve` 子命令）
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## 关键约束
 
