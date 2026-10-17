@@ -69,3 +69,16 @@
 
 **遗留给票 02**：`tests/test_worker_live.py` 仍以「spawn stdio 子进程」驱动，此时已失效
 （`worker` 子命令已删）。
+
+### 2026-10-17 code-review 后续（commit `ac32a76`）
+
+Standards 轴指出的硬违规已修：spec「Seam 1」要求「两个独立会话并发驱动同一个 `serve`，
+断言互不干扰（不开 socket）」，原实现只在 Seam 2（TCP）覆盖。新增
+`test_two_concurrent_sessions_do_not_leak_into_each_other`：两线程各用内存流、在
+factory 栅栏处会合制造确定交错，断言各自输出流只有自己的 3 帧。
+
+同时抽出 `tests/tcp_support.py` 消除 `Peer` / `RunningService` 在两份测试里的重复；
+`test_worker.py` 文件头去掉已不适用的「stdout 纪律」。
+
+**最终测试面**：默认套件 **110 passed**（协议 18 + 传输 10 + 其余）；
+`-m network tests/test_worker_live.py` **3 passed in 11.48s**。
