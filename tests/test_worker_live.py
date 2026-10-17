@@ -1,27 +1,32 @@
-"""桥协议真网络实测（``network`` 标记）：拉起真 worker 子进程、真连通达信服务器。
+"""数据服务真网络实测（``network`` 标记）：真 TCP 服务、真连通达信服务器。
+
+前置条件：**本机可出站连通达信行情服务器（TCP 7709）**。用例在进程内起一个监听在
+``127.0.0.1`` 随机端口的 ``serve``（系统分配端口，不写死 7701），因此不会与开发机上
+已在跑的容器/进程撞端口；用例结束即关服务，不留监听与残留进程。
 
 默认套件与 CI 通过 ``addopts = -m 'not network and not integration'`` 排除；
 本机验收运行方式::
 
     .venv\\Scripts\\python.exe -m pytest -m network tests/test_worker_live.py -q
 
-逐条覆盖票据 01 的验收：握手两行、日K 60 根与字段、管道往返、未知方法存活、
-UTF-8 往返、stdout 零污染、关 stdin 干净退出。
+逐条覆盖：握手两帧、日K 60 根与字段、按 id 收发、未知方法存活、UTF-8 往返。
+
+与迁移前（stdio 形态）的差异：旧用例还断言「关 stdin 后子进程干净退出」与「stdout
+无杂行」——TCP 形态下没有 stdin，进程也不因单个连接结束而退出（它继续监听下一个
+连接），故这两条改为「关连接后服务仍可接受新连接」；日志不再需要「不进协议流」的
+断言，因为日志与协议流已经彻底分离（不同 fd）。
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
-import queue
-import subprocess
-import sys
+import socket
 import threading
-import time
 from datetime import date, timedelta
 
 import pytest
+
+from mootdx import worker
 
 pytestmark = pytest.mark.network
 
@@ -29,79 +34,68 @@ HANDSHAKE_TIMEOUT = 60.0
 REQUEST_TIMEOUT = 60.0
 
 
-class WorkerPeer:
-    """把 worker 子进程包成「发一行收一行」的对端，并对两条流做并发读取。"""
+class Service:
+    """进程内起一个真 TCP 服务（127.0.0.1 + 系统分配端口）。"""
 
     def __init__(self) -> None:
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
-        self.process = subprocess.Popen(
-            [sys.executable, "-m", "mootdx", "worker"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-        self.stdout_lines: queue.Queue[bytes] = queue.Queue()
-        self.stderr_lines: list[str] = []
-        self._threads = [
-            threading.Thread(target=self._pump, args=(self.process.stdout, self.stdout_lines.put), daemon=True),
-            threading.Thread(target=self._drain_stderr, daemon=True),
-        ]
-        for thread in self._threads:
-            thread.start()
+        self.server = worker.create_server("127.0.0.1", 0)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
 
-    def _pump(self, stream, sink) -> None:
-        for line in iter(stream.readline, b""):
-            sink(line)
-        sink(None)
+    @property
+    def address(self) -> tuple[str, int]:
+        host, port = self.server.server_address[:2]
+        return host, port
 
-    def _drain_stderr(self) -> None:
-        for line in iter(self.process.stderr.readline, b""):
-            self.stderr_lines.append(line.decode("utf-8", errors="replace").rstrip("\r\n"))
+    def connect(self) -> Peer:
+        return Peer(self.address)
 
-    def wait_for_stderr(self, needle: str, timeout: float = 10.0) -> bool:
-        """有界等待 stderr 出现含 needle 的行（跨管道投递非瞬时）。"""
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=15)
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if any(needle in line for line in self.stderr_lines):
-                return True
-            time.sleep(0.05)
-        return False
+
+class Peer:
+    """把连接包成「发一行收一行」，并强制每一行都是合法协议帧。"""
+
+    def __init__(self, address: tuple[str, int]) -> None:
+        self.socket = socket.create_connection(address, timeout=REQUEST_TIMEOUT)
+        self.reader = self.socket.makefile("rb")
 
     def read_message(self, timeout: float = REQUEST_TIMEOUT, what: str = "message") -> dict:
-        try:
-            line = self.stdout_lines.get(timeout=timeout)
-        except queue.Empty:
-            pytest.fail(f"等待 {what} 超时（{timeout}s）\nstderr:\n" + "\n".join(self.stderr_lines))
-        if line is None:
-            pytest.fail(f"等待 {what} 时 stdout 关闭\nstderr:\n" + "\n".join(self.stderr_lines))
-        # 硬性纪律：stdout 的每一行都必须是可解析的协议消息（UTF-8 无乱码）
+        self.socket.settimeout(timeout)
+        line = self.reader.readline()
+        if not line:
+            pytest.fail(f"等待 {what} 时连接被关闭")
+        # 硬性纪律：每一行都必须是可解析的协议消息（UTF-8 无损）
         return json.loads(line.decode("utf-8", errors="strict"))
 
     def send(self, message: dict) -> None:
         payload = (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
-        self.process.stdin.write(payload)
-        self.process.stdin.flush()
+        self.socket.sendall(payload)
 
-    def close_stdin(self) -> None:
-        self.process.stdin.close()
-
-    def shutdown(self) -> None:
-        if self.process.poll() is None:
-            self.process.kill()
+    def close(self) -> None:
+        self.reader.close()
+        self.socket.close()
 
 
 @pytest.fixture()
-def peer():
-    peer = WorkerPeer()
+def service():
+    running = Service()
     try:
-        yield peer
+        yield running
     finally:
-        peer.shutdown()
-        # 等子进程收尸，防止句柄泄漏警告
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            peer.process.wait(timeout=10)
+        running.stop()
+
+
+@pytest.fixture()
+def peer(service):
+    client = service.connect()
+    try:
+        yield client
+    finally:
+        client.close()
 
 
 @pytest.fixture()
@@ -116,10 +110,6 @@ def ready_peer(peer):
     assert ready["ready"] is True, ready
     assert isinstance(ready["server"], list), ready
     assert isinstance(ready["warmup_seconds"], (int, float)), ready
-
-    # 日志可见所选服务器 IP、且只出现于 stderr（stdout 无协议外杂行由 read_message 强制）
-    server_ip = ready["server"][0]
-    assert peer.wait_for_stderr(server_ip), peer.stderr_lines[-5:]
     return peer
 
 
@@ -151,7 +141,7 @@ def test_handshake_and_daily_kline_over_real_network(ready_peer):
         assert bar["amount"] > 0
 
 
-def test_pipe_roundtrip_survives_unknown_method_and_utf8(ready_peer):
+def test_socket_roundtrip_survives_unknown_method_and_utf8(ready_peer):
     peer = ready_peer
 
     # 未知方法：ok:false，id 对应；中文方法名证明 UTF-8 双侧无损
@@ -161,7 +151,7 @@ def test_pipe_roundtrip_survives_unknown_method_and_utf8(ready_peer):
     assert unknown["ok"] is False
     assert "没有这个方法" in unknown["error"]
 
-    # 进程存活：紧接着的合法请求照常应答（发一行收一行）
+    # 会话存活：紧接着的合法请求照常应答（发一行收一行）
     peer.send({"id": 8, "method": "daily_kline", "params": {"symbol": "002029", "count": 3, "adjust": "qfq"}})
     followup = peer.read_message(what="后续请求应答")
     assert followup["id"] == 8
@@ -169,9 +159,17 @@ def test_pipe_roundtrip_survives_unknown_method_and_utf8(ready_peer):
     assert len(followup["bars"]) <= 3
 
 
-def test_stdin_close_exits_cleanly(ready_peer):
-    peer = ready_peer
-    peer.close_stdin()
+def test_connection_close_keeps_service_listening(service):
+    """关连接 = 会话结束；服务不退出，下一条连接照常可用。"""
 
-    assert peer.process.wait(timeout=15) == 0
-    assert peer.stdout_lines.get(timeout=5) is None  # stdout 到 EOF 无残余行
+    first = service.connect()
+    assert first.read_message(what="hello")["protocol"] == 1
+    first.read_message(timeout=HANDSHAKE_TIMEOUT, what="ready")
+    first.close()
+
+    second = service.connect()
+    try:
+        assert second.read_message(what="hello")["hello"] is True
+        assert second.read_message(timeout=HANDSHAKE_TIMEOUT, what="ready")["ready"] is True
+    finally:
+        second.close()

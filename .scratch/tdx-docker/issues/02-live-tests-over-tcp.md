@@ -6,7 +6,7 @@
 
 **Blocked by:** 01（先有 `serve` 子命令）
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## 关键约束
 
