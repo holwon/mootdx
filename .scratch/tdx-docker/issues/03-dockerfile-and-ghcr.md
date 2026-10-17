@@ -18,7 +18,9 @@
 - **非 root 运行**：若 base 镜像与卷权限允许则启用；若与 `VOLUME` 权限冲突，允许退回 root 并在 Dockerfile 里注释原因。
 - **流水线**：push tag `v*` → 构建并推送 `ghcr.io/<owner>/mootdx:<version>` 与 `:latest`；PR 与 push master → 只构建、不推送。平台 `linux/amd64` + `linux/arm64`（buildx）。认证用 `GITHUB_TOKEN`（`packages: write`），不引入额外密钥。
 - 现有测试工作流保持不变，新增的镜像工作流与之并列。
-- 不要迁移到 Alpine / distroless：`pandas` 在 musl 上代价高，slim base 即可。
+- 已知偏离（2026-10-18 修订）：原写「不要迁移到 Alpine」，实测前提不成立——依赖全有
+  musllinux wheel、不编译，基座省 94 MB、整机 445 → 368 MB，双架构已实测。详见 spec 的
+  同条注记。
 
 ## Acceptance criteria
 
@@ -34,7 +36,8 @@
 
 ### 2026-10-17 实施记录（commit `58ade23`）
 
-**镜像体积**：`mootdx-serve:local` = **445 MB**（`python:3.12-slim` 基座 + 运行时依赖；
+**镜像体积**：`mootdx-serve:local` = **368 MB**（`python:3.12-alpine` 基座 + 运行时依赖；
+2026-10-18 由 Debian slim 迁移而来，原为 445 MB）。
 多阶段后镜像内无源码树、无编译工具链）。
 
 **Dockerfile 要点**：

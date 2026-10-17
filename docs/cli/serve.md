@@ -49,6 +49,27 @@ docker run -d --name mootdx \
 
 镜像同时提供 `linux/amd64` 与 `linux/arm64`，Apple Silicon 与 x86 服务器都能直接拉。
 
+### 镜像什么时候发布
+
+| 触发 | 行为 |
+|---|---|
+| **任意分支** `push` | 构建 `linux/amd64`、**不推送**（用于尽早发现 Dockerfile 腐化） |
+| **Pull Request** | 同上，只构建不推送 |
+| **push tag `v*`** | 构建 `linux/amd64` + `linux/arm64` 并推送到 ghcr（版本号 + `latest`） |
+
+**只在功能分支上 push 是不会产生镜像的**——需要打 tag 才会发布：
+
+```shell
+git tag v0.12.0
+git push origin v0.12.0
+```
+
+发布后在 `ghcr.io/holwon/mootdx` 可见 `0.12.0` 与 `latest` 两个 tag；确认多架构清单：
+
+```shell
+docker buildx imagetools inspect ghcr.io/holwon/mootdx:latest
+```
+
 ## 用 Docker Compose 跑
 
 仓库根目录带 `docker-compose.yml`。适合「要和自己的服务一起跑」或「想把端口、

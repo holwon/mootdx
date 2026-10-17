@@ -2,8 +2,10 @@ name: Docker image
 
 on:
   push:
+    # 任何分支推送都构建（只构建不推送），这样功能分支上就能发现 Dockerfile 腐化；
+    # 只有 tag 与 master 才推送镜像。
+    branches: ["**"]
     tags: ["v*"]
-    branches: [master]
   pull_request:
 
 permissions:
