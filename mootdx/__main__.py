@@ -145,11 +145,16 @@ def bundle(symbol: str, action: str, market: str, output: Path, extension: str) 
     click.echo(f"文件目录: {output.resolve()}")
 
 
-@entry.command(help="启动桥 worker：行式 JSON 协议（stdin/stdout），供外部进程常驻驱动。")
-def worker() -> None:
-    from mootdx.worker import main
+@entry.command(help="启动常驻数据服务：行式 JSON 协议 v1（TCP），供外部进程远程取数。")
+@click.option("--host", default="0.0.0.0", show_default=True, help="监听地址。")
+@click.option("--port", default=7701, type=click.IntRange(min=0, max=65535), show_default=True, help="监听端口。")
+def serve(host: str, port: int) -> None:
+    from mootdx.worker import BindError, main
 
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main(host=host, port=port))
+    except BindError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 if __name__ == "__main__":

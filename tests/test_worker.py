@@ -263,12 +263,13 @@ def test_logs_stay_off_the_protocol_stream(caplog):
     assert any("117.34.114.16" in record.getMessage() for record in caplog.records)
 
 
-def test_cli_registers_worker_subcommand():
+def test_cli_registers_serve_subcommand_and_drops_worker():
     from click.testing import CliRunner
 
     from mootdx.__main__ import entry
 
-    result = CliRunner().invoke(entry, ["worker", "--help"])
+    result = CliRunner().invoke(entry, ["--help"])
 
     assert result.exit_code == 0, result.output
-    assert "worker" in result.output
+    assert "serve" in result.output
+    assert "worker" not in result.output

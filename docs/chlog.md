@@ -1,3 +1,19 @@
+## Unreleased (2026-10-17)
+
+### Feat
+
+- `mootdx serve` 子命令：行式 JSON 协议 v1 改由 **TCP** 承载，常驻监听（默认
+  `0.0.0.0:7701`），多客户端并发、每连接独立行情客户端、探测结果进程内共享；
+  连不上行情服务器时回 `ready:false` 并**继续监听**
+- 官方镜像 `ghcr.io/holwon/mootdx`（amd64 + arm64），多阶段构建、非 root、
+  缓存目录声明为卷、健康检查只探监听端口不探上游
+
+### Breaking
+
+- 删除 `mootdx worker` 子命令（stdio 形态）：协议帧形状未变（`protocol` 仍为 1），
+  只改承载；宿主侧改为连 `host:port`，会话结束由「关 stdin」改为「关连接」
+- 文档 `cli/worker.md` → `cli/serve.md`
+
 ## Unreleased (2026-10-16)
 
 ### Feat
