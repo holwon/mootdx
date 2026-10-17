@@ -1,3 +1,28 @@
+## v0.13.0 (2026-10-18)
+
+### Feat
+
+- `mootdx serve` 子命令：行式 JSON 协议 v1 改由 **TCP** 承载，常驻监听（默认
+  `0.0.0.0:7701`），多客户端并发、每连接独立行情客户端、探测结果进程内共享；
+  连不上行情服务器时回 `ready:false` 并**继续监听**
+- 官方镜像 `ghcr.io/holwon/mootdx`（amd64 + arm64），Alpine 多阶段构建、非 root、
+  缓存目录声明为卷、健康检查只探监听端口不探上游
+- 仓库自带 `docker-compose.yml`；`MOOTDX_PORT` 一个变量联动宿主映射、容器监听与
+  健康检查
+
+### Breaking
+
+- 删除 `mootdx worker` 子命令（stdio 形态）：协议帧形状未变（`protocol` 仍为 1），
+  只改承载；宿主侧改为连 `host:port`，会话结束由「关 stdin」改为「关连接」
+- 文档 `cli/worker.md` → `cli/serve.md`
+
+### Fix
+
+- 扩展市场代码（`4#CF7D0LAO` 一类）不再被转小写：在 Linux/macOS 等大小写敏感的
+  文件系统上，此前会静默返回空 DataFrame
+- `StdQuotes` 的候选服务器池补上 `tdxpy` 自带清单。此前只探内建那批，而它们可能
+  整批失效；没有 `~/.mootdx/config.json` 的干净环境（例如新拉的镜像）会一台都连不上
+
 ## Unreleased (2026-10-16)
 
 ### Feat

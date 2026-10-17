@@ -1,0 +1,49 @@
+# 通达信数据服务的 Compose 定义。
+#
+#   docker compose up -d            用已发布镜像起服务
+#   docker compose up -d --build    从本仓源码构建后起服务
+#   docker compose logs -f          看日志
+#   docker compose down             停（卷保留；加 -v 连缓存一起删）
+#
+# 端口只绑回环：服务不做鉴权，行情数据虽是公开的，但没有理由广播到局域网。
+# 需要给同一台机器上的其他程序用时，连 127.0.0.1:7701 即可。
+
+services:
+  mootdx:
+    image: ghcr.io/holwon/mootdx:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mootdx
+    restart: unless-stopped
+    ports:
+      # 宿主端口可用 .env 里的 MOOTDX_PORT 改；容器内端口与宿主端口保持一致，
+      # 这样镜像自带的健康检查（读 MOOTDX_PORT）不会与实际监听对不上。
+      - "127.0.0.1:${MOOTDX_PORT:-7701}:${MOOTDX_PORT:-7701}"
+    environment:
+      # 容器内必须监听 0.0.0.0，否则端口映射不可达。
+      MOOTDX_HOST: 0.0.0.0
+      MOOTDX_PORT: ${MOOTDX_PORT:-7701}
+    command: ["--host", "0.0.0.0", "--port", "${MOOTDX_PORT:-7701}"]
+    volumes:
+      # 复权数据（xdxr）与测速结果。删容器不清缓存；docker compose down -v 才清。
+      - mootdx-cache:/home/mootdx/.mootdx
+    # 健康检查沿用镜像内定义（只探本地监听端口并读一帧 hello，不触碰通达信服务器），
+    # 这里不重复声明——两处各写一份迟早会不同步。
+
+  # ── 同一个 Compose 里挂一个使用方（示例，按需取消注释）──────────────────────
+  # 关键点：两个服务在同一个默认网络里，使用方连 `mootdx:7701`（服务名即主机名），
+  # 不需要经过宿主端口映射，也不用写 IP。
+  #
+  # app:
+  #   image: your-app:latest
+  #   depends_on:
+  #     mootdx:
+  #       condition: service_healthy
+  #   environment:
+  #     TDX_ENDPOINT: mootdx:7701
+
+volumes:
+  # 命名卷：多个容器/多次重建共用同一份缓存。
+  mootdx-cache:
+    name: mootdx-cache

@@ -6,7 +6,7 @@
 
 **Blocked by:** 01（先有 `serve` 子命令）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 关键约束
 
@@ -18,7 +18,31 @@
 
 ## Acceptance criteria
 
-- [ ] `python -m pytest -m network tests/test_worker_live.py` 在本机全绿
-- [ ] 断言内容与迁移前逐条对应（握手两帧、日 K 根数与字段、UTF-8、未知方法、stdout 无杂行不再适用则删去并在 docstring 说明）
-- [ ] 未设任何环境变量时，默认套件仍全绿且不触网
-- [ ] 用例结束后不留监听中的端口与残留进程
+- [x] `python -m pytest -m network tests/test_worker_live.py` 在本机全绿
+- [x] 断言内容与迁移前逐条对应（握手两帧、日 K 根数与字段、UTF-8、未知方法、stdout 无杂行不再适用则删去并在 docstring 说明）
+- [x] 未设任何环境变量时，默认套件仍全绿且不触网
+- [x] 用例结束后不留监听中的端口与残留进程
+
+## Comments
+
+### 2026-10-17 实施记录（commit `d65235e`）
+
+**改法**：用例在进程内起一个真 `serve`（`worker.create_server("127.0.0.1", 0)` + 后台
+线程跑 `serve_forever`），走 `socket.create_connection` 取数；不再 spawn 子进程、不再
+喂 stdin/stdout。端口用系统分配的，不写死 7701。
+
+**断言对应关系**：
+
+| 迁移前 | 迁移后 |
+|---|---|
+| 握手两行（hello / ready） | 两条：`test_handshake_and_daily_kline_over_real_network` 的前半 |
+| 日K 60 根、7 字段、升序、值域 | 同一用例后半，逐条未改 |
+| 管道往返 + 未知方法 + UTF-8 | `test_socket_roundtrip_survives_unknown_method_and_utf8` |
+| 关 stdin 后干净退出 | 改为 `test_connection_close_keeps_service_listening`（关连接后仍可新连） |
+| stdout 无杂行 | 删除（协议流与日志已不同 fd）；文件头 docstring 已说明 |
+
+**实测**：`-m network tests/test_worker_live.py` → **3 passed in 14.61s**；服务器
+`117.34.114.16:7709`。用例结束后服务已 `shutdown()` + `server_close()`，无残留监听。
+
+**默认套件**：`python -m pytest` → 99 passed（与票 01 一致）；`network` 组仍被
+`addopts` 排除，未触网。

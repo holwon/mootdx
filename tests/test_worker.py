@@ -1,7 +1,9 @@
-"""桥协议单元测试（协议 v1）：以假行情客户端驱动 ``worker.serve``。
+"""协议单元测试（协议 v1）：以假行情客户端驱动 ``worker.serve``。
 
-覆盖：握手帧形状、请求-应答映射、字段裁剪、错误回收、stdout 纪律、EOF 退出。
-真网络路径见 ``tests/test_worker_live.py``（network 标记，默认套件排除）。
+覆盖：握手帧形状、请求-应答映射、字段裁剪、错误回收、两会话并发隔离、EOF 退出。
+这些用例只认「读流 + 写流」，与承载无关（内存流驱动，不开 socket）。
+TCP 传输层见 ``tests/test_serve.py``；真网络路径见 ``tests/test_worker_live.py``
+（network 标记，默认套件排除）。
 """
 
 from __future__ import annotations
@@ -9,6 +11,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
@@ -255,6 +259,43 @@ def test_invalid_utf8_on_stdin_exits_with_code_2():
     assert [message.get("hello") for message in messages[:1]] == [True]  # 握手已发生，失败在请求阶段
 
 
+def test_two_concurrent_sessions_do_not_leak_into_each_other():
+    """两条独立会话并发驱动同一个 ``serve``：各自的输出流里只出现自己的帧。
+
+    隔离性是协议层自身的性质——承载层（每连接一线程）只是把它并行化，不该成为
+    隔离的前提。两条会话用不同标的，断言谁也没读到对方的请求结果。
+
+    交错是确定的：两个 factory 在栅栏处会合后才各自返回，因此两边必然同时处于
+    ``serve`` 内部（握手已发、请求未处理），后续不再有任何时序假设。
+    """
+
+    meeting = threading.Barrier(2, timeout=10)
+
+    def run(symbol: str, close: float):
+        def factory():
+            meeting.wait()
+            return FakeQuotes(frame=sample_frame().assign(close=[close, close]))
+
+        reader = io.StringIO(request(1, "daily_kline", {"symbol": symbol}) + "\n")
+        writer = io.BytesIO()
+        code = worker.serve(reader, writer, factory=factory)
+        return code, [json.loads(line) for line in writer.getvalue().decode("utf-8").splitlines()]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(run, "AAA", 1.0)
+        second = pool.submit(run, "BBB", 2.0)
+        results = {"AAA": first.result(timeout=20), "BBB": second.result(timeout=20)}
+
+    for symbol, expected_close in (("AAA", 1.0), ("BBB", 2.0)):
+        code, messages = results[symbol]
+        assert code == 0
+        assert messages[0]["hello"] is True
+        assert messages[1]["ready"] is True
+        assert messages[2]["id"] == 1
+        assert {bar["close"] for bar in messages[2]["bars"]} == {expected_close}
+        assert len(messages) == 3, f"{symbol} 会话多出了不属于它的帧"
+
+
 def test_logs_stay_off_the_protocol_stream(caplog):
     with caplog.at_level(logging.INFO, logger="mootdx"):
         messages, _ = run_serve([], lambda: FakeQuotes(server=("117.34.114.16", 7709)))
@@ -263,12 +304,13 @@ def test_logs_stay_off_the_protocol_stream(caplog):
     assert any("117.34.114.16" in record.getMessage() for record in caplog.records)
 
 
-def test_cli_registers_worker_subcommand():
+def test_cli_registers_serve_subcommand_and_drops_worker():
     from click.testing import CliRunner
 
     from mootdx.__main__ import entry
 
-    result = CliRunner().invoke(entry, ["worker", "--help"])
+    result = CliRunner().invoke(entry, ["--help"])
 
     assert result.exit_code == 0, result.output
-    assert "worker" in result.output
+    assert "serve" in result.output
+    assert "worker" not in result.output

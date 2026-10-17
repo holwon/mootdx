@@ -177,7 +177,15 @@ mootdx 目前向外部宿主提供数据的唯一形态是 `mootdx worker`：一
 - **其他数据面**（quote / ticks / 分钟 K / 财务 / 除权）。本批只搬承载，`daily_kline` 仍是唯一方法；`method` 命名空间继续为后续预留。
 - **多版本协议适配**。单版本握手，不匹配即 `ready:false` / 判坏。
 - **Windows / macOS 原生运行承诺**。服务本身是纯 Python 无平台专有代码，但官方分发形态是容器；非容器用法（`pip install` 后手工 `mootdx serve`）不作为承诺面。
-- **镜像体积优化到极致**。多阶段 + slim base 即可，不做 distroless / Alpine 迁移（`pandas` 在 musl 上代价高）。
+- **镜像体积优化到极致**。多阶段 + 精简基座即可，不做 distroless 迁移。
+
+> **2026-10-18 修订（实测否证了本条的原前提）**：原文写「不做 Alpine 迁移（`pandas` 在
+> musl 上代价高）」，实测该前提不成立——`pandas` / `numpy` / `wcwidth` 在 musl 上**都有
+> musllinux wheel**，全程不编译，装出来 146 MB（glibc 侧 142 MB，仅多 4 MB）；而基座从
+> `python:3.12-slim`（177 MB）换成 `python:3.12-alpine`（83 MB）**省 94 MB**。
+> 净效果：镜像 445 MB → 368 MB。已在 `linux/amd64` 与 `linux/arm64`（QEMU）双架构实测：
+> 握手、60 根日 K、单位与复权口径全部正常，冷 10.05s / 热 0.06s（amd64），
+> 冷 10.41s / 热 0.17s（arm64）。
 
 ## Further Notes
 

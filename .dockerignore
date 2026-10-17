@@ -1,0 +1,32 @@
+# 构建上下文只留构建真正需要的东西：源码 + 打包元数据。
+# 少了这个文件，`docker build .` / `docker compose build` 会把 .venv、.git、
+# .scratch 等全部塞进上下文（几百 MB），构建变慢且可能泄漏本地文件。
+
+.git
+.github
+.venv
+.pytest_cache
+.ruff_cache
+.codeartsdoer
+.codebase-memory
+.scratch
+docs
+sample
+scripts
+tests
+templates
+
+# 构建产物与缓存
+build
+dist
+*.egg-info
+**/__pycache__
+**/*.py[cod]
+
+# 本地配置与编辑器
+.env
+.env.*
+.vscode
+.idea
+*.log
+*.plk

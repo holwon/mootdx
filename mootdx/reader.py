@@ -57,20 +57,24 @@ class ReaderBase:
         if not isinstance(symbol, str) or not symbol.strip():
             raise MootdxValidationException("symbol 不能为空")
 
-        symbol = symbol.strip().lower()
+        symbol = symbol.strip()
+        lowered = symbol.lower()
         if "#" in symbol:
             market = "ds"
-        elif symbol.startswith("88"):
+        elif lowered.startswith("88"):
             market = "sh"
         else:
-            market = get_stock_market(symbol, string=True)
+            market = get_stock_market(lowered, string=True)
 
+        # 沪/深/京的文件名约定是小写前缀 + 代码；扩展市场（``#`` 分隔）的代码本身
+        # 可能含大写字母（如 ``4#CF7D0LAO``），而 ``.day`` 文件名大小写敏感——
+        # 一律转小写会让它在 Linux/macOS 上直接找不到文件。因此归一化只针对前者。
         if market in {"sh", "sz", "bj"}:
             for prefix in ("sh", "sz", "bj"):
-                if symbol.startswith(prefix):
-                    symbol = symbol[len(prefix):]
+                if lowered.startswith(prefix):
+                    lowered = lowered[len(prefix):]
                     break
-            symbol = f"{market}{symbol}"
+            symbol = f"{market}{lowered}"
 
         if suffix is None:
             suffixes: list[str] = []

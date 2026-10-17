@@ -132,6 +132,68 @@ mootdx reader --help
 mootdx quotes --help
 ```
 
+## 用 Docker 跑数据服务
+
+不想碰 Python 环境时，直接用官方镜像起一个常驻数据服务，然后让任何程序连
+`host:port` 取数：
+
+```bash
+docker run -d --name mootdx \
+  -p 127.0.0.1:7701:7701 \
+  --restart unless-stopped \
+  ghcr.io/holwon/mootdx:latest
+```
+
+* **端口**：容器监听 `7701`；只映射到 `127.0.0.1` 是刻意的（服务不做鉴权，没必要广播到局域网）。
+  要对外提供时改成 `-p 7701:7701`。
+* **缓存**：复权数据与测速结果缓存在容器内 `/home/mootdx/.mootdx`。加
+  `-v mootdx-cache:/home/mootdx/.mootdx` 可在重建容器后复用（热路径约 0.06s，冷路径约 10s）。
+* **网络**：容器需要**出站 TCP 7709** 才能连通达信行情服务器；不需要任何入站放行（除映射端口）。
+* 镜像同时提供 `linux/amd64` 与 `linux/arm64`。
+
+取数示例（行式 JSON 协议，每行一个对象）：
+
+```python
+import json, socket
+
+with socket.create_connection(("127.0.0.1", 7701), timeout=30) as sock:
+    stream = sock.makefile("rwb")
+    print(json.loads(stream.readline()))   # hello
+    print(json.loads(stream.readline()))   # ready
+    stream.write(b'{"id": 1, "method": "daily_kline", "params": {"symbol": "002029", "count": 60}}\n')
+    stream.flush()
+    print(json.loads(stream.readline())["bars"][-1])
+```
+
+### 用 Compose
+
+仓库根目录带 `docker-compose.yml`，适合和自己的服务一起跑：
+
+```bash
+docker compose up -d          # 用已发布镜像
+docker compose up -d --build  # 改了本仓代码时
+```
+
+改端口不用动 compose 文件，在仓库根建一个 `.env` 写 `MOOTDX_PORT=17711` 即可
+（宿主映射、容器内监听、健康检查会一起跟着变）。
+
+### 让别的程序用上它
+
+服务只是一个 TCP 端点，接入方式取决于使用方在哪：
+
+| 使用方位置 | 连什么 | 备注 |
+|---|---|---|
+| 同机进程 | `127.0.0.1:7701` | 走宿主端口映射；端口只绑回环 |
+| 同一 Compose 里的服务 | `mootdx:7701` | 服务名即主机名，不用宿主映射，也不用写 IP |
+| 同一 Docker 网络的其他容器 | `mootdx:7701` | 需在同一用户自定义网络上 |
+| 局域网 / 另一台机器 | `<宿主 IP>:7701` | 需把映射改成 `-p 7701:7701`；服务无鉴权，慎用 |
+
+使用方要自己实现**超时、重连、`ready` 判读与 `protocol` 校验**——服务端只做「收一行、回一行」，
+不主动断空闲连接，也不替你重试。
+
+协议帧、方法参数、从 `mootdx worker`（已删除的 stdio 形态）的迁移、各语言接法与排查表见
+[docs/cli/serve.md](docs/cli/serve.md)。也可以不用容器，直接 `mootdx serve --port 7701`。
+
 ## 测试和本地验证
 
 在项目目录执行默认离线测试：

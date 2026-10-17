@@ -38,6 +38,36 @@ def test_std_client_uses_default_when_bestip_is_empty(monkeypatch):
     assert client.client.connected == (*expected, 3)
 
 
+def test_std_client_probes_the_full_host_list_not_only_the_builtin_subset(monkeypatch):
+    """候选池必须包含 tdxpy 自带的主机，否则干净机器上只剩那 38 台可能全部失效。
+
+    这是真实踩到的故障：``consts.HQ_HOSTS`` 里的 38 台在某段时间全部取不到数据，
+    而 ``tdxpy.constants.hq_hosts`` 里的 104 台里有可用的。若工厂只探前者，
+    没有 ``~/.mootdx/config.json`` 的干净环境（例如刚拉的镜像）就完全取不到数。
+    """
+
+    probed: list[tuple[str, int]] = []
+
+    class RecordingApi(FakeHqApi):
+        def connect(self, ip, port, time_out):
+            probed.append((ip, port))
+            return super().connect(ip, port, time_out)
+
+    monkeypatch.setattr("mootdx.quotes.TdxHq_API", RecordingApi)
+    config.setup(force=True)
+    config.set("BESTIP.HQ", "")
+
+    Quotes.factory("std", timeout=3)
+
+    from tdxpy.constants import hq_hosts
+
+    builtin = {(item[1], item[2]) for item in config.get("SERVER.HQ")}
+    tdxpy_only = {(item[1], item[2]) for item in hq_hosts} - builtin
+
+    assert tdxpy_only, "tdxpy 主机清单应包含不在内建清单里的条目，否则该断言无意义"
+    assert tdxpy_only & set(probed), "候选池漏掉了 tdxpy 自带的主机"
+
+
 @pytest.mark.parametrize("server", [(), ("127.0.0.1",), ("bad-ip", 7709), ("127.0.0.1", 0)])
 def test_valid_server_rejects_invalid_values(server):
     with pytest.raises(ValueError):
