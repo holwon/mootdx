@@ -7,7 +7,8 @@ docker run -d --name mootdx -p 127.0.0.1:7701:7701 ghcr.io/holwon/mootdx:latest
 ```
 
 之后任何程序连 `127.0.0.1:7701`，按行式 JSON 协议取数即可，不必装 Python。
-细节见 [数据服务](cli/serve.md)。
+想和自己的服务一起跑就用 `docker compose up -d`（仓库根有 `docker-compose.yml`）；
+同 Compose 里的服务直接连 `mootdx:7701`。细节见 [数据服务](cli/serve.md)。
 
 ## 使用最快的服务器
 

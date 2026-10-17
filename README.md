@@ -165,7 +165,33 @@ with socket.create_connection(("127.0.0.1", 7701), timeout=30) as sock:
     print(json.loads(stream.readline())["bars"][-1])
 ```
 
-协议帧、方法参数、从 `mootdx worker`（已删除的 stdio 形态）的迁移与排查表见
+### 用 Compose
+
+仓库根目录带 `docker-compose.yml`，适合和自己的服务一起跑：
+
+```bash
+docker compose up -d          # 用已发布镜像
+docker compose up -d --build  # 改了本仓代码时
+```
+
+改端口不用动 compose 文件，在仓库根建一个 `.env` 写 `MOOTDX_PORT=17711` 即可
+（宿主映射、容器内监听、健康检查会一起跟着变）。
+
+### 让别的程序用上它
+
+服务只是一个 TCP 端点，接入方式取决于使用方在哪：
+
+| 使用方位置 | 连什么 | 备注 |
+|---|---|---|
+| 同机进程 | `127.0.0.1:7701` | 走宿主端口映射；端口只绑回环 |
+| 同一 Compose 里的服务 | `mootdx:7701` | 服务名即主机名，不用宿主映射，也不用写 IP |
+| 同一 Docker 网络的其他容器 | `mootdx:7701` | 需在同一用户自定义网络上 |
+| 局域网 / 另一台机器 | `<宿主 IP>:7701` | 需把映射改成 `-p 7701:7701`；服务无鉴权，慎用 |
+
+使用方要自己实现**超时、重连、`ready` 判读与 `protocol` 校验**——服务端只做「收一行、回一行」，
+不主动断空闲连接，也不替你重试。
+
+协议帧、方法参数、从 `mootdx worker`（已删除的 stdio 形态）的迁移、各语言接法与排查表见
 [docs/cli/serve.md](docs/cli/serve.md)。也可以不用容器，直接 `mootdx serve --port 7701`。
 
 ## 测试和本地验证
