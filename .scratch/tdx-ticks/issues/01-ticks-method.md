@@ -10,17 +10,17 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 新增 `TICK_FIELDS = ("time", "price", "vol", "buyorsell")` 常量，与 `BAR_FIELDS` 并列
-- [ ] 新增 `ticks(client, params)` 函数，结构照 `daily_kline`：参数校验 → 调 `client.transactions(...)` → 空表返回空列表 → 缺列抛 `ValueError` → 裁列 → `json.loads`
-- [ ] 走 `StdQuotes.transactions(symbol, start, offset, date)`，**不调 `transaction()`**
-- [ ] `handle()` 加一条分发；未知方法仍落到最后一行返回 `ok:false`
-- [ ] 入参：`symbol`（必填，裸六位码或 `SH600519` / `SH.600519` 写法，与 `daily_kline` 同）、`date`（可省，接受 `yyyyMMdd` 与 `yyyy-MM-dd`，省略时按 Asia/Shanghai 墙钟取当天）、`start`（可省，默认 0）、`count`（可省，默认 2000）
-- [ ] **`date` 的两种形态必须在 worker 内归一化**：底层 `StdQuotes.transactions` 内部执行 `int(date)`，传 `"2026-10-20"` 会直接抛 `ValueError`。故先剥掉短横线（`yyyy-MM-dd` → `yyyyMMdd`）再传，不得只做透传
-- [ ] 出参：`{"ok": true, "ticks": [{time, price, vol, buyorsell}]}`；**不带 `amount`、不带 `num`**
-- [ ] 参数校验照 `daily_kline` 风格：空 symbol / 负 start / `count ≤ 0` / 非法 date 形态各抛 `ValueError`，经既有 catch 变 `ok:false`
-- [ ] 空结果返回 `{"ok": true, "ticks": []}` 而非 `ok:false`
-- [ ] **`PROTOCOL` 保持 1**（新增方法不 bump 协议版本）
-- [ ] 不改 `tdxpy` 一行（包含 `quotes.py`）
-- [ ] 单测用既有 `tests/test_worker.py` 的 `FakeQuotes` 扩一个 `transactions()` 方法，覆盖：参数校验四例、**`yyyy-MM-dd` 归一化**、裁列（含喂额外诊断列）、空结果、缺列、未知方法
+- [x] 新增 `TICK_FIELDS = ("time", "price", "vol", "buyorsell")` 常量，与 `BAR_FIELDS` 并列
+- [x] 新增 `ticks(client, params)` 函数，结构照 `daily_kline`：参数校验 → 调 `client.transactions(...)` → 空表返回空列表 → 缺列抛 `ValueError` → 裁列 → `json.loads`
+- [x] 走 `StdQuotes.transactions(symbol, start, offset, date)`，**不调 `transaction()`**
+- [x] `handle()` 加一条分发；未知方法仍落到最后一行返回 `ok:false`
+- [x] 入参：`symbol`（必填，裸六位码或 `SH600519` / `SH.600519` 写法，与 `daily_kline` 同）、`date`（可省，接受 `yyyyMMdd` 与 `yyyy-MM-dd`，省略时按 Asia/Shanghai 墙钟取当天）、`start`（可省，默认 0）、`count`（可省，默认 2000）
+- [x] **`date` 的两种形态必须在 worker 内归一化**：底层 `StdQuotes.transactions` 内部执行 `int(date)`，传 `"2026-10-20"` 会直接抛 `ValueError`。故先剥掉短横线（`yyyy-MM-dd` → `yyyyMMdd`）再传，不得只做透传
+- [x] 出参：`{"ok": true, "ticks": [{time, price, vol, buyorsell}]}`；**不带 `amount`、不带 `num`**
+- [x] 参数校验照 `daily_kline` 风格：空 symbol / 负 start / `count ≤ 0` / 非法 date 形态各抛 `ValueError`，经既有 catch 变 `ok:false`
+- [x] 空结果返回 `{"ok": true, "ticks": []}` 而非 `ok:false`
+- [x] **`PROTOCOL` 保持 1**（新增方法不 bump 协议版本）
+- [x] 不改 `tdxpy` 一行（包含 `quotes.py`）
+- [x] 单测用既有 `tests/test_worker.py` 的 `FakeQuotes` 扩一个 `transactions()` 方法，覆盖：参数校验四例、**`yyyy-MM-dd` 归一化**、裁列（含喂额外诊断列）、空结果、缺列、未知方法

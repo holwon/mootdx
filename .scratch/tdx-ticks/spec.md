@@ -1,6 +1,6 @@
 # 数据服务新增 `ticks` 方法（通达信当日分笔）
 
-Status: ready-for-agent
+Status: implemented
 
 > **来源**：本 spec 由 `/to-spec` 于 2026-10-21 从仓库现状与一手实测合成。上游消费者是 `holwon/astock-mcp` 的通达信源（其决策见 `astock-mcp/docs/adr/0023-tdx-ticks-via-history-interface.md`，本仓不重复）。协议形状沿用既有的 [`docs/cli/serve.md`](../../docs/cli/serve.md) v1（行式 JSON）；关联既有决策 `astock-mcp/docs/adr/0020-tdx-over-docker.md`（本仓不设 ADR，跨仓决策在消费方）与本仓 [`tdx-docker/spec.md`](../tdx-docker/spec.md)（`serve` 承载的来历）。
 >
