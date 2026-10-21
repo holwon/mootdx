@@ -18,7 +18,7 @@
 一个独立行情客户端（底层客户端持有一个 socket，共享实例上的并发请求会交错）；
 连接内部请求严格串行（单飞行、写入等回读）。
 
-``method`` 命名空间为后续数据面预留，当前仅实现 ``daily_kline``。
+``method`` 命名空间为后续数据面预留，当前实现 ``daily_kline`` 与 ``ticks``。
 """
 
 from __future__ import annotations
@@ -28,10 +28,12 @@ import json
 import logging
 import os
 import platform
+import re
 import socketserver
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any, BinaryIO, TextIO
 
 from mootdx import __version__
@@ -47,10 +49,26 @@ DEFAULT_PORT = 7701
 #: 应答中保留的行情列。``volume`` / ``adj`` / ``preclose`` 是复权诊断列，不外发。
 BAR_FIELDS = ("datetime", "open", "high", "low", "close", "vol", "amount")
 
+#: 分笔应答保留的列。历史分笔接口只吐这四列；``price × vol`` 与真实成交额天然有差
+#: （3 秒桶内 ``price`` 取末笔、``vol`` 取桶内合计），故不派生 ``amount``。
+TICK_FIELDS = ("time", "price", "vol", "buyorsell")
+
 #: ``daily_kline`` 的缺省根数与频率（9 = 日K）。
 DEFAULT_COUNT = 60
 DAILY_FREQUENCY = 9
 ALLOWED_ADJUSTS = ("qfq", "hfq")
+
+#: ``ticks`` 的缺省条数。服务器单次上限也就是 2000（更大的值被静默截断）。
+DEFAULT_TICK_COUNT = 2000
+
+#: 上海的固定偏移与对应时区对象。用固定偏移而非 ``ZoneInfo``：日期归属只关心墙钟，
+#: 无需 tz 数据库（省掉容器里的 tzdata 依赖，也让本函数无需网络或磁盘）。
+SHANGHAI_OFFSET = timedelta(hours=8)
+SHANGHAI_TZ = timezone(SHANGHAI_OFFSET)
+
+#: ``date`` 接受的形态：``yyyyMMdd`` 与 ``yyyy-MM-dd``（后者由本模块剥掉短横线）。
+_DATE_DASHED = re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})$")
+_DATE_COMPACT = re.compile(r"^[0-9]{8}$")
 
 
 def send(writer: BinaryIO, message: dict[str, Any]) -> None:
@@ -59,6 +77,45 @@ def send(writer: BinaryIO, message: dict[str, Any]) -> None:
     payload = (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
     writer.write(payload)
     writer.flush()
+
+
+def shanghai_today(now: datetime | None = None) -> str:
+    """返回上海的当日墙钟日期，形如 ``20261020``。
+
+    这是**归属日的推定**，不是交易日推定：非交易日据此取数只会拿到空表
+    （``ok:true`` + 空数组），由调用方按「无数据」处理。本服务不引入交易日历。
+
+    :param now: 参照时刻；缺省取当前 UTC 时刻。naive 值按 UTC 解释。
+    :return: ``yyyyMMdd``
+    """
+
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(SHANGHAI_TZ).strftime("%Y%m%d")
+
+
+def _normalize_date(value: Any) -> str:
+    """把 ``date`` 归一成 ``yyyyMMdd``。
+
+    ``StdQuotes.transactions`` 内部执行 ``int(date)``，传 ``2026-10-20`` 会直接抛
+    ``ValueError``，所以短横线必须在这里剥掉，不能只做原样透传。
+
+    :raises ValueError: 形态不受支持或日期不存在时（错误文本列出两种合法形态）
+    """
+
+    text = str(value).strip()
+    dashed = _DATE_DASHED.match(text)
+    compact = _DATE_COMPACT.match(text)
+    if not dashed and not compact:
+        raise ValueError(f"date 仅支持 yyyyMMdd 或 yyyy-MM-dd，收到: {text!r}")
+
+    normalized = "".join(dashed.groups()) if dashed else text
+    try:
+        datetime.strptime(normalized, "%Y%m%d")
+    except ValueError as exc:
+        raise ValueError(f"date 不是存在的日期: {text!r}") from exc
+    return normalized
 
 
 def _as_int(value: Any, name: str) -> int:
@@ -108,6 +165,49 @@ def daily_kline(client: Any, params: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "bars": bars}
 
 
+def ticks(client: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """执行一次 ``ticks`` 请求：取数 → 裁剪列 → 记录化。
+
+    走**历史分笔接口** ``StdQuotes.transactions``（``get_history_transaction_data``），
+    **不走**当日接口 ``transaction()``——后者在 ``time_frame()`` 客户端闸外直接返回
+    空表（不抛异常），而分笔主要在收盘后复盘时才被调用。
+
+    本函数只做「取数 → 裁列 → 记录化」：不清洗、不去重、不换算单位。剔除规则与
+    单位归一都在消费方适配器里，两处各清洗一遍必然分叉。
+
+    :param client: 行情客户端（``Quotes.factory`` 产物或测试替身）
+    :param params: ``{"symbol": str, "date": "yyyyMMdd"|"yyyy-MM-dd", "start": int, "count": int}``
+        —— ``date`` 省略时按上海墙钟取当天；``start`` / ``count`` 缺省为 0 / 2000。
+    :return: ``{"ok": True, "ticks": [{time, price, vol, buyorsell}]}``；空数据返回空列表。
+    :raises ValueError: 参数非法或应答缺列
+    """
+
+    symbol = str(params.get("symbol") or "").strip()
+    if not symbol:
+        raise ValueError("ticks 缺少 symbol 参数")
+
+    start = _as_int(params.get("start", 0), "start")
+    count = _as_int(params.get("count", DEFAULT_TICK_COUNT), "count")
+    if start < 0:
+        raise ValueError("start 必须大于等于 0")
+    if count <= 0:
+        raise ValueError("count 必须大于 0")
+
+    raw_date = params.get("date")
+    date = shanghai_today() if raw_date is None or str(raw_date).strip() == "" else _normalize_date(raw_date)
+
+    frame = client.transactions(symbol=symbol, start=start, offset=count, date=date)
+    if frame is None or frame.empty:
+        return {"ok": True, "ticks": []}
+
+    missing = [field for field in TICK_FIELDS if field not in frame.columns]
+    if missing:
+        raise ValueError(f"分笔缺少字段: {', '.join(missing)}")
+
+    ticks_rows = json.loads(frame[list(TICK_FIELDS)].to_json(orient="records"))
+    return {"ok": True, "ticks": ticks_rows}
+
+
 def handle(client: Any, request: dict[str, Any]) -> dict[str, Any]:
     """分发一条请求；未知方法回 ``ok:false`` 而不落异常（进程存活）。"""
 
@@ -116,6 +216,8 @@ def handle(client: Any, request: dict[str, Any]) -> dict[str, Any]:
 
     if method == "daily_kline":
         return daily_kline(client, params)
+    if method == "ticks":
+        return ticks(client, params)
 
     return {"ok": False, "error": f"unknown method: {method!r}"}
 

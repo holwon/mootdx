@@ -13,6 +13,7 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -43,11 +44,33 @@ def sample_frame() -> pd.DataFrame:
     )
 
 
+def sample_ticks() -> pd.DataFrame:
+    """两笔分笔，附历史接口之外的诊断列（``num`` / ``amount`` 不得出现在应答里）。"""
+
+    return pd.DataFrame(
+        {
+            "time": ["14:59:57", "15:00:00"],
+            "price": [1701.0, 1702.5],
+            "vol": [12, 3],
+            "buyorsell": [0, 2],
+            "num": [5, 1],
+            "amount": [2041200.0, 510750.0],
+        }
+    )
+
+
 class FakeQuotes:
     """最小行情客户端替身：记录调用、返回预置 DataFrame。"""
 
-    def __init__(self, frame: pd.DataFrame | None = None, server=("127.0.0.1", 7709), error=None) -> None:
+    def __init__(
+        self,
+        frame: pd.DataFrame | None = None,
+        server=("127.0.0.1", 7709),
+        error=None,
+        tick_frame: pd.DataFrame | None = None,
+    ) -> None:
         self.frame = sample_frame() if frame is None else frame
+        self.tick_frame = sample_ticks() if tick_frame is None else tick_frame
         self.server = server
         self.error = error
         self.calls: list[dict] = []
@@ -58,6 +81,12 @@ class FakeQuotes:
         if self.error is not None:
             raise self.error
         return self.frame
+
+    def transactions(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.tick_frame
 
     def close(self) -> None:
         self.closed = True
@@ -302,6 +331,195 @@ def test_logs_stay_off_the_protocol_stream(caplog):
 
     assert len(messages) == 2
     assert any("117.34.114.16" in record.getMessage() for record in caplog.records)
+
+
+# --- ticks：历史分笔方法 ---------------------------------------------------------
+
+
+def test_shanghai_today_uses_wall_clock_of_shanghai_not_utc():
+    """UTC 的 17:00 已是上海次日 01:00——归属日必须按上海墙钟算。"""
+
+    utc_evening = datetime(2026, 10, 20, 17, 0, tzinfo=timezone.utc)
+
+    assert worker.shanghai_today(utc_evening) == "20261021"
+
+
+def test_shanghai_today_before_local_midnight_stays_on_same_day():
+    utc_afternoon = datetime(2026, 10, 20, 15, 59, tzinfo=timezone.utc)  # 上海 23:59
+
+    assert worker.shanghai_today(utc_afternoon) == "20261020"
+
+
+def test_shanghai_today_accepts_naive_datetime_as_utc():
+    naive = datetime(2026, 10, 20, 17, 0)
+
+    assert worker.shanghai_today(naive) == "20261021"
+
+
+def test_ticks_maps_request_and_strips_extra_columns():
+    """应答只含四列且顺序固定；诊断列（``num`` / ``amount``）不外发。"""
+
+    client = FakeQuotes()
+
+    messages, _ = run_serve([request(3, "ticks", {"symbol": "600519", "date": "20261020"})], lambda: client)
+
+    response = messages[2]
+    assert response["id"] == 3
+    assert response["ok"] is True
+    assert response["ticks"] == [
+        {"time": "14:59:57", "price": 1701.0, "vol": 12, "buyorsell": 0},
+        {"time": "15:00:00", "price": 1702.5, "vol": 3, "buyorsell": 2},
+    ]
+    assert [list(tick) for tick in response["ticks"]] == [
+        ["time", "price", "vol", "buyorsell"],
+        ["time", "price", "vol", "buyorsell"],
+    ]
+    assert client.calls == [{"symbol": "600519", "start": 0, "offset": 2000, "date": "20261020"}]
+
+
+def test_ticks_defaults_start_and_count():
+    client = FakeQuotes()
+
+    messages, _ = run_serve([request(1, "ticks", {"symbol": "600519", "date": "20261020"})], lambda: client)
+
+    assert messages[2]["ok"] is True
+    assert client.calls == [{"symbol": "600519", "start": 0, "offset": 2000, "date": "20261020"}]
+
+
+def test_ticks_passes_start_and_count_through():
+    client = FakeQuotes()
+
+    run_serve(
+        [request(1, "ticks", {"symbol": "600519", "date": "20261020", "start": 2000, "count": 800})],
+        lambda: client,
+    )
+
+    assert client.calls == [{"symbol": "600519", "start": 2000, "offset": 800, "date": "20261020"}]
+
+
+def test_ticks_normalizes_dashed_date_before_calling_upstream():
+    """``StdQuotes.transactions`` 内部 ``int(date)``，故短横线必须在 worker 内剥掉。"""
+
+    client = FakeQuotes()
+
+    messages, _ = run_serve([request(1, "ticks", {"symbol": "600519", "date": "2026-10-20"})], lambda: client)
+
+    assert messages[2]["ok"] is True
+    assert client.calls[0]["date"] == "20261020"
+
+
+def test_ticks_defaults_date_to_shanghai_today(monkeypatch):
+    monkeypatch.setattr(worker, "shanghai_today", lambda: "20261020")
+    client = FakeQuotes()
+
+    messages, _ = run_serve([request(1, "ticks", {"symbol": "600519"})], lambda: client)
+
+    assert messages[2]["ok"] is True
+    assert client.calls[0]["date"] == "20261020"
+
+
+def test_ticks_requires_symbol():
+    messages, _ = run_serve([request(1, "ticks", {"date": "20261020"})], lambda: FakeQuotes())
+
+    assert messages[2]["ok"] is False
+    assert "symbol" in messages[2]["error"]
+
+
+def test_ticks_rejects_blank_symbol():
+    messages, _ = run_serve([request(1, "ticks", {"symbol": "   "})], lambda: FakeQuotes())
+
+    assert messages[2]["ok"] is False
+    assert "symbol" in messages[2]["error"]
+
+
+def test_ticks_rejects_negative_start():
+    messages, _ = run_serve(
+        [request(1, "ticks", {"symbol": "600519", "start": -1})],
+        lambda: FakeQuotes(),
+    )
+
+    assert messages[2]["ok"] is False
+    assert "start" in messages[2]["error"]
+
+
+def test_ticks_rejects_non_positive_count():
+    messages, _ = run_serve(
+        [request(1, "ticks", {"symbol": "600519", "count": 0})],
+        lambda: FakeQuotes(),
+    )
+
+    assert messages[2]["ok"] is False
+    assert "count" in messages[2]["error"]
+
+
+def test_ticks_rejects_malformed_date_and_names_both_accepted_forms():
+    messages, _ = run_serve(
+        [request(1, "ticks", {"symbol": "600519", "date": "2026/10/20"})],
+        lambda: FakeQuotes(),
+    )
+
+    error = messages[2]["error"]
+    assert messages[2]["ok"] is False
+    assert "yyyyMMdd" in error
+    assert "yyyy-MM-dd" in error
+
+
+def test_ticks_rejects_non_existent_date():
+    """``20260231`` 形态合法但日期不存在，不能透传给上游。"""
+
+    client = FakeQuotes()
+
+    messages, _ = run_serve([request(1, "ticks", {"symbol": "600519", "date": "20260231"})], lambda: client)
+
+    assert messages[2]["ok"] is False
+    assert "date" in messages[2]["error"]
+    assert client.calls == []
+
+
+def test_ticks_empty_frame_answers_no_ticks():
+    messages, _ = run_serve(
+        [request(1, "ticks", {"symbol": "600519", "date": "20261020"})],
+        lambda: FakeQuotes(tick_frame=pd.DataFrame()),
+    )
+
+    assert messages[2] == {"id": 1, "ok": True, "ticks": []}
+
+
+def test_ticks_missing_field_is_an_error():
+    client = FakeQuotes(tick_frame=sample_ticks().drop(columns=["buyorsell"]))
+
+    messages, _ = run_serve([request(1, "ticks", {"symbol": "600519", "date": "20261020"})], lambda: client)
+
+    assert messages[2]["ok"] is False
+    assert "缺少字段" in messages[2]["error"]
+    assert "buyorsell" in messages[2]["error"]
+
+
+def test_ticks_client_exception_becomes_failed_response():
+    client = FakeQuotes(error=RuntimeError("服务器连接已断开"))
+
+    messages, _ = run_serve([request(1, "ticks", {"symbol": "600519", "date": "20261020"})], lambda: client)
+
+    assert messages[2]["ok"] is False
+    assert "服务器连接已断开" in messages[2]["error"]
+
+
+def test_ticks_and_daily_kline_share_one_session_and_keep_ids():
+    client = FakeQuotes()
+
+    messages, code = run_serve(
+        [
+            request(1, "ticks", {"symbol": "600519", "date": "20261020"}),
+            request(2, "daily_kline", {"symbol": "002029"}),
+        ],
+        lambda: client,
+    )
+
+    assert code == 0
+    assert messages[2]["id"] == 1
+    assert "ticks" in messages[2]
+    assert messages[3]["id"] == 2
+    assert "bars" in messages[3]
 
 
 def test_cli_registers_serve_subcommand_and_drops_worker():
