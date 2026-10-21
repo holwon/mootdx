@@ -42,6 +42,20 @@ def sample_frame() -> pd.DataFrame:
     )
 
 
+def sample_ticks() -> pd.DataFrame:
+    """两笔分笔，附额外列（应答里只能是四列）。"""
+
+    return pd.DataFrame(
+        {
+            "time": ["14:59", "15:00"],
+            "price": [9.61, 9.6],
+            "vol": [12, 3],
+            "buyorsell": [0, 2],
+            "num": [5, 1],
+        }
+    )
+
+
 class FakeQuotes:
     """最小行情客户端替身：记录调用、可断开标记。"""
 
@@ -53,6 +67,10 @@ class FakeQuotes:
     def bars(self, **kwargs):
         self.calls.append(kwargs)
         return sample_frame()
+
+    def transactions(self, **kwargs):
+        self.calls.append(kwargs)
+        return sample_ticks()
 
     def close(self) -> None:
         self.closed = True
@@ -118,6 +136,25 @@ def test_client_receives_hello_then_ready_and_can_request(client):
     assert response["ok"] is True
     assert len(response["bars"]) == 1
     assert set(response["bars"][0]) == {"datetime", "open", "high", "low", "close", "vol", "amount"}
+
+
+def test_ticks_over_the_same_connection_after_daily_kline(client):
+    """新方法与 ``daily_kline`` 走同一条连接、回同一 ``id``，不另开通道。"""
+
+    client.handshake()
+
+    client.send({"id": 1, "method": "daily_kline", "params": {"symbol": "002029", "count": 1}})
+    assert client.read_message(what="daily_kline 应答")["ok"] is True
+
+    client.send({"id": 2, "method": "ticks", "params": {"symbol": "002029", "date": "2026-10-20"}})
+    response = client.read_message(what="ticks 应答")
+
+    assert response["id"] == 2
+    assert response["ok"] is True
+    assert response["ticks"] == [
+        {"time": "14:59", "price": 9.61, "vol": 12, "buyorsell": 0},
+        {"time": "15:00", "price": 9.6, "vol": 3, "buyorsell": 2},
+    ]
 
 
 def test_two_clients_are_isolated_and_each_gets_its_own_quotes_client(service, factory):
