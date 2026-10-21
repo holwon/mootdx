@@ -61,10 +61,9 @@ ALLOWED_ADJUSTS = ("qfq", "hfq")
 #: ``ticks`` 的缺省条数。服务器单次上限也就是 2000（更大的值被静默截断）。
 DEFAULT_TICK_COUNT = 2000
 
-#: 上海的固定偏移与对应时区对象。用固定偏移而非 ``ZoneInfo``：日期归属只关心墙钟，
-#: 无需 tz 数据库（省掉容器里的 tzdata 依赖，也让本函数无需网络或磁盘）。
-SHANGHAI_OFFSET = timedelta(hours=8)
-SHANGHAI_TZ = timezone(SHANGHAI_OFFSET)
+#: 上海时区（固定 +08:00）。用固定偏移而非 ``ZoneInfo``：日期归属只关心墙钟，
+#: 无需 tz 数据库（省掉容器里的 tzdata 依赖，也让本函数无需读盘）。
+SHANGHAI_TZ = timezone(timedelta(hours=8))
 
 #: ``date`` 接受的形态：``yyyyMMdd`` 与 ``yyyy-MM-dd``（后者由本模块剥掉短横线）。
 _DATE_DASHED = re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})$")
@@ -125,6 +124,41 @@ def _as_int(value: Any, name: str) -> int:
         raise ValueError(f"{name} 必须是整数") from exc
 
 
+def _require_symbol(method: str, params: dict[str, Any]) -> str:
+    """取出并校验 ``symbol``；空或全空白一律拒绝（不把空请求发到上游）。"""
+
+    symbol = str(params.get("symbol") or "").strip()
+    if not symbol:
+        raise ValueError(f"{method} 缺少 symbol 参数")
+    return symbol
+
+
+def _paging(params: dict[str, Any], default_count: int) -> tuple[int, int]:
+    """取并校验分页参数，返回 ``(start, count)``。"""
+
+    start = _as_int(params.get("start", 0), "start")
+    count = _as_int(params.get("count", default_count), "count")
+    if start < 0:
+        raise ValueError("start 必须大于等于 0")
+    if count <= 0:
+        raise ValueError("count 必须大于 0")
+    return start, count
+
+
+def _records(frame: Any, fields: tuple[str, ...], what: str, **json_kwargs: Any) -> list[dict[str, Any]]:
+    """裁出 ``fields``（顺序即外发顺序）并转成记录列表。
+
+    调用前必须已排除空表——空表是「无数据」，不是错误。
+
+    :raises ValueError: 缺列时（错误文本列出缺了哪些）
+    """
+
+    missing = [field for field in fields if field not in frame.columns]
+    if missing:
+        raise ValueError(f"{what}缺少字段: {', '.join(missing)}")
+    return json.loads(frame[list(fields)].to_json(orient="records", **json_kwargs))
+
+
 def daily_kline(client: Any, params: dict[str, Any]) -> dict[str, Any]:
     """执行一次 ``daily_kline`` 请求：取数 → 裁剪列 → 记录化。
 
@@ -134,16 +168,8 @@ def daily_kline(client: Any, params: dict[str, Any]) -> dict[str, Any]:
     :return: ``{"ok": True, "bars": [...]}``；空数据返回空列表。
     """
 
-    symbol = str(params.get("symbol") or "").strip()
-    if not symbol:
-        raise ValueError("daily_kline 缺少 symbol 参数")
-
-    count = _as_int(params.get("count", DEFAULT_COUNT), "count")
-    start = _as_int(params.get("start", 0), "start")
-    if count <= 0:
-        raise ValueError("count 必须大于 0")
-    if start < 0:
-        raise ValueError("start 必须大于等于 0")
+    symbol = _require_symbol("daily_kline", params)
+    start, count = _paging(params, DEFAULT_COUNT)
 
     adjust = params.get("adjust")
     kwargs: dict[str, Any] = {}
@@ -157,12 +183,7 @@ def daily_kline(client: Any, params: dict[str, Any]) -> dict[str, Any]:
     if frame is None or frame.empty:
         return {"ok": True, "bars": []}
 
-    missing = [field for field in BAR_FIELDS if field not in frame.columns]
-    if missing:
-        raise ValueError(f"行情缺少字段: {', '.join(missing)}")
-
-    bars = json.loads(frame[list(BAR_FIELDS)].to_json(orient="records", date_format="iso"))
-    return {"ok": True, "bars": bars}
+    return {"ok": True, "bars": _records(frame, BAR_FIELDS, "行情", date_format="iso")}
 
 
 def ticks(client: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -175,6 +196,9 @@ def ticks(client: Any, params: dict[str, Any]) -> dict[str, Any]:
     本函数只做「取数 → 裁列 → 记录化」：不清洗、不去重、不换算单位。剔除规则与
     单位归一都在消费方适配器里，两处各清洗一遍必然分叉。
 
+    ``start`` 自最近一笔往回数，且**每页页内已按时间升序**（实测第 0 页 13:00→15:28、
+    第 1 页 09:32→13:00）。故要拼成正序的全天序列必须**反转页序、页内不动**。
+
     :param client: 行情客户端（``Quotes.factory`` 产物或测试替身）
     :param params: ``{"symbol": str, "date": "yyyyMMdd"|"yyyy-MM-dd", "start": int, "count": int}``
         —— ``date`` 省略时按上海墙钟取当天；``start`` / ``count`` 缺省为 0 / 2000。
@@ -182,16 +206,8 @@ def ticks(client: Any, params: dict[str, Any]) -> dict[str, Any]:
     :raises ValueError: 参数非法或应答缺列
     """
 
-    symbol = str(params.get("symbol") or "").strip()
-    if not symbol:
-        raise ValueError("ticks 缺少 symbol 参数")
-
-    start = _as_int(params.get("start", 0), "start")
-    count = _as_int(params.get("count", DEFAULT_TICK_COUNT), "count")
-    if start < 0:
-        raise ValueError("start 必须大于等于 0")
-    if count <= 0:
-        raise ValueError("count 必须大于 0")
+    symbol = _require_symbol("ticks", params)
+    start, count = _paging(params, DEFAULT_TICK_COUNT)
 
     raw_date = params.get("date")
     date = shanghai_today() if raw_date is None or str(raw_date).strip() == "" else _normalize_date(raw_date)
@@ -200,12 +216,7 @@ def ticks(client: Any, params: dict[str, Any]) -> dict[str, Any]:
     if frame is None or frame.empty:
         return {"ok": True, "ticks": []}
 
-    missing = [field for field in TICK_FIELDS if field not in frame.columns]
-    if missing:
-        raise ValueError(f"分笔缺少字段: {', '.join(missing)}")
-
-    ticks_rows = json.loads(frame[list(TICK_FIELDS)].to_json(orient="records"))
-    return {"ok": True, "ticks": ticks_rows}
+    return {"ok": True, "ticks": _records(frame, TICK_FIELDS, "分笔")}
 
 
 def handle(client: Any, request: dict[str, Any]) -> dict[str, Any]:

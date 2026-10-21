@@ -19,13 +19,13 @@ RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels .
 
 FROM python:${PYTHON_VERSION}-alpine
 
-# TZ + tzdata 是**防御性修正**，与本仓的 `ticks` 方法无依赖关系（它走无闸的历史接口，
+# TZ + tzdata 是**防御性修正**：与本仓任何协议方法都无依赖（`ticks` 走无闸的历史接口，
 # 日期归属由 worker 用固定 +08:00 偏移算出，不查 tz 数据库）。
 # 留着是因为 Alpine（musl）默认不带时区数据，`TZ=Asia/Shanghai` 会静默退回 UTC，于是：
 #   * 任何依赖本地时间的代码都按 UTC 判时钟——例如 tdxpy 当日分笔的 time_frame() 闸会
 #     在**上海 17:30–19:30 / 21:00–23:00** 误判为交易时段，而在真正盘中却判否；
 #   * 日志时间戳与上海交易日历差 8 小时，排查时容易把时区差当成数据错。
-# 它可独立回退：删掉 ENV 里的 TZ 与这一行 apk add，不影响任何协议方法。
+# 回退方式：删掉下面的 TZ= 与这一行 apk add。
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai \

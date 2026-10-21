@@ -16,7 +16,7 @@
 - [ ] 新增 `ticks(client, params)` 函数，结构照 `daily_kline`：参数校验 → 调 `client.transactions(...)` → 空表返回空列表 → 缺列抛 `ValueError` → 裁列 → `json.loads`
 - [ ] 走 `StdQuotes.transactions(symbol, start, offset, date)`，**不调 `transaction()`**
 - [ ] `handle()` 加一条分发；未知方法仍落到最后一行返回 `ok:false`
-- [ ] 入参：`symbol`（必填，裸六位码）、`date`（可省，接受 `yyyyMMdd` 与 `yyyy-MM-dd`，省略时按 Asia/Shanghai 墙钟取当天）、`start`（可省，默认 0）、`count`（可省，默认 2000）
+- [ ] 入参：`symbol`（必填，裸六位码或 `SH600519` / `SH.600519` 写法，与 `daily_kline` 同）、`date`（可省，接受 `yyyyMMdd` 与 `yyyy-MM-dd`，省略时按 Asia/Shanghai 墙钟取当天）、`start`（可省，默认 0）、`count`（可省，默认 2000）
 - [ ] **`date` 的两种形态必须在 worker 内归一化**：底层 `StdQuotes.transactions` 内部执行 `int(date)`，传 `"2026-10-20"` 会直接抛 `ValueError`。故先剥掉短横线（`yyyy-MM-dd` → `yyyyMMdd`）再传，不得只做透传
 - [ ] 出参：`{"ok": true, "ticks": [{time, price, vol, buyorsell}]}`；**不带 `amount`、不带 `num`**
 - [ ] 参数校验照 `daily_kline` 风格：空 symbol / 负 start / `count ≤ 0` / 非法 date 形态各抛 `ValueError`，经既有 catch 变 `ok:false`
