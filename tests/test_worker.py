@@ -49,7 +49,7 @@ def sample_ticks() -> pd.DataFrame:
 
     return pd.DataFrame(
         {
-            "time": ["14:59:57", "15:00:00"],
+            "time": ["14:59", "15:00"],
             "price": [1701.0, 1702.5],
             "vol": [12, 3],
             "buyorsell": [0, 2],
@@ -367,8 +367,8 @@ def test_ticks_maps_request_and_strips_extra_columns():
     assert response["id"] == 3
     assert response["ok"] is True
     assert response["ticks"] == [
-        {"time": "14:59:57", "price": 1701.0, "vol": 12, "buyorsell": 0},
-        {"time": "15:00:00", "price": 1702.5, "vol": 3, "buyorsell": 2},
+        {"time": "14:59", "price": 1701.0, "vol": 12, "buyorsell": 0},
+        {"time": "15:00", "price": 1702.5, "vol": 3, "buyorsell": 2},
     ]
     assert [list(tick) for tick in response["ticks"]] == [
         ["time", "price", "vol", "buyorsell"],
