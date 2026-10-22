@@ -1,9 +1,15 @@
 # 通达信数据服务的 Compose 定义。
 #
 #   docker compose up -d            用已发布镜像起服务
-#   docker compose up -d --build    从本仓源码构建后起服务
+#   docker compose pull             更新到最新镜像（up 不会重拉已存在的镜像）
 #   docker compose logs -f          看日志
 #   docker compose down             停（卷保留；加 -v 连缓存一起删）
+#
+# 本文件只消费已发布镜像，不带 build 段：镜像由 CI 构建推送，
+# 所以 `docker compose up -d --build` 在这里只会跳过构建，不会触发重建。
+# 要从本仓源码构建时，手动构建并打上同名 tag，compose 会直接使用它：
+#   docker build -t ghcr.io/holwon/mootdx:latest .
+#   docker compose up -d
 #
 # 端口只绑回环：服务不做鉴权，行情数据虽是公开的，但没有理由广播到局域网。
 # 需要给同一台机器上的其他程序用时，连 127.0.0.1:7701 即可。
@@ -11,9 +17,6 @@
 services:
   mootdx:
     image: ghcr.io/holwon/mootdx:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
     container_name: mootdx
     restart: unless-stopped
     ports:
